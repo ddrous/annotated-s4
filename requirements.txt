@@ -1,0 +1,20 @@
+flax
+torchtext
+jupytext
+matplotlib
+black
+flake8
+google-cloud-storage
+ipython
+isort
+pre-commit
+# torchfsdd
+tensorflow
+tqdm
+seaborn
+celluloid
+wandb
+datasets
+tqdm
+hydra-core
+omegaconf
