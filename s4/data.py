@@ -2,7 +2,7 @@ import os
 import jax
 import numpy as np
 import torch
-import torchtext
+# import torchtext
 import torchvision
 import torchvision.transforms as transforms
 from datasets import DatasetDict, load_dataset
