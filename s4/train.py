@@ -385,11 +385,12 @@ def example_train(
                 keep=train.epochs,
             )
 
-        if train.sample is not None:
+        if train.sample is not None and epoch==train.epochs-1:
             if dataset == "mnist":  # Should work for QuickDraw too but untested
                 sample_fn = partial(
-                    sample_image_prefix, imshape=(28, 28)
+                    sample_image_prefix, imshape=(28, 28),
                 )  # params=state["params"], length=784, bsz=64, prefix=train.sample)
+                #   params=state["params"], length=784, bsz=64, prefix=train.sample)
             else:
                 raise NotImplementedError(
                     "Sampling currently only supported for MNIST"
@@ -402,16 +403,47 @@ def example_train(
             #     classification=classification,
             #     **model,
             # )
+            # new_testloader= torch.utils.data.DataLoader(
+            #     new_testloader.dataset,
+            #     batch_size=len(new_testloader.dataset),
+            #     shuffle=False,
+            #     num_workers=24,
+            # )
+            new_testloader = testloader
+            new_batch_size = train.bsz
+            print(f"[*] Sampling with {train.sample} context pixels...")
+            print(f"[*] Testloader with total number of batches: {np.ceil(len(new_testloader.dataset) / new_batch_size).astype(int)}, each of size {new_batch_size}")
             samples, examples = sample_fn(
                 # run_id,
                 params=state.params,
                 model=model_cls(decode=True, training=False),
                 rng=rng,
-                dataloader=testloader,
+                # dataloader=testloader,
+                dataloader=new_testloader,
                 prefix=train.sample,
-                n_batches=1,
+                n_batches=78,
+                # n_batches=testloader.num_batches,
                 save=False,
             )
+
+            # ## Print the shape of the samples and the images
+            # print(f"[*] Sampled {len(samples)} samples of shape {samples[0].shape}")
+            # print(f"[*] Sampled {len(examples)} examples of shape {examples[0].shape}")
+
+            ## Stack the samples and examples
+            new_samples = np.stack(samples)
+            new_examples = np.stack(examples)
+            print(f"[*] Samples and Examples Shapes: {new_samples.shape} and {new_examples.shape}")
+            # calculate the MSE
+            mse = np.mean((new_samples - new_examples) ** 2)
+            mae = np.mean(np.abs(new_samples - new_examples))
+            print(f"[*] MSE: {mse}")
+            print(f"[*] MAE: {mae}")
+            
+            ## Save the samples and examples to numpy files
+            np.save(f"my_artefacts/mnist_samples.npy", new_samples)
+            np.save(f"my_artefacts/mnist_examples.npy", new_examples)
+
             if wandb is not None:
                 samples = [wandb.Image(sample) for sample in samples]
                 wandb.log({"samples": samples}, commit=False)

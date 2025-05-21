@@ -1,3 +1,4 @@
+#%%
 # <center><h1> The Annotated S4 </h1></center>
 #
 #
@@ -1349,7 +1350,8 @@ def sample(model, params, prime, cache, x, start, end, rng):
             return x
 
         x = jax.vmap(update)(x, out)
-        return x, rng, vars["cache"].unfreeze()
+        # return x, rng, vars["cache"].unfreeze()
+        return x, rng, vars["cache"]
 
     return jax.lax.fori_loop(start, end, jax.jit(loop), (x, rng, cache))[0]
 
@@ -1361,10 +1363,15 @@ def sample(model, params, prime, cache, x, start, end, rng):
 
 def init_recurrence(model, params, init_x, rng):
     variables = model.init(rng, init_x)
+
+    # print("Model variabl cache", variables["cache"], type(variables["cache"]))
+
     vars = {
         "params": params,
-        "cache": variables["cache"].unfreeze(),
-        "prime": variables["prime"].unfreeze(),
+        # "cache": variables["cache"].unfreeze(),
+        # "prime": variables["prime"].unfreeze(),
+        "cache": variables["cache"],
+        "prime": variables["prime"],
     }
     print("[*] Priming")
     _, prime_vars = model.apply(vars, init_x, mutable=["prime"])
@@ -1475,8 +1482,18 @@ def sample_image_prefix(
             cur[:, np.arange(0, START)],
             mutable=["cache"],
         )
-        cache = vars["cache"].unfreeze()
+        # cache = vars["cache"].unfreeze()
+        cache = vars["cache"]
+        # print("Start and End value and type:", START, LENGTH, type(START), type(LENGTH))
         out = sample(model, params, prime, cache, cur, START, LENGTH - 1, rng)
+
+        ## Let me find out what the shape of out is
+        print("Finding out shape !")
+        print("Out shape", out.shape)
+        print("Image shape", image.shape)
+        np.save(f"my_artefacts/mnist_samples.npy", out)
+        np.save(f"my_artefacts/mnist_examples.npy", image)
+
 
         # Visualization
         out = out.reshape(BATCH, *imshape)
