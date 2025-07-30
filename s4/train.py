@@ -1,6 +1,7 @@
 import os
 import shutil
 from functools import partial
+import time
 import hydra
 import jax
 import jax.numpy as np
@@ -353,6 +354,8 @@ def example_train(
     # Loop over epochs
     best_loss, best_acc, best_epoch = 10000, 0, 0
     for epoch in range(train.epochs):
+        start_time = time.time()
+
         print(f"[*] Starting Training Epoch {epoch + 1}...")
         state, train_loss, train_acc = train_epoch(
             state,
@@ -481,6 +484,7 @@ def example_train(
             wandb.run.summary["Best Test Accuracy"] = best_acc
             wandb.run.summary["Best Epoch"] = best_epoch
 
+        print(f"[*] Epoch {epoch + 1} took {time.time() - start_time:.2f}s\n")
 
 @hydra.main(version_base=None, config_path="", config_name="config")
 def main(cfg: DictConfig) -> None:
