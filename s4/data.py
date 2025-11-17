@@ -1,3 +1,4 @@
+#%%
 import os
 import jax
 import numpy as np
@@ -143,6 +144,175 @@ def create_mnist_dataset(bsz=128):
     )
 
     return trainloader, testloader, N_CLASSES, SEQ_LENGTH, IN_DIM
+
+
+
+from PIL import Image
+import pandas as pd
+
+class CelebADataset(torch.utils.data.Dataset):
+    """
+    For the CelebA dataset, adapted for time series from https://github.com/ddrous/self-mod
+    """
+    def __init__(self, 
+                 data_path="./data/", 
+                 data_split="train",
+                 num_shots=100,
+                 resolution=(32, 32),
+                 order_pixels=True,
+                 unit_normalise=True,
+                 positional_enc=None):
+
+        if num_shots <= 0:
+            raise ValueError("Number of shots must be greater than 0.")
+        elif num_shots > resolution[0]*resolution[1]:
+            raise ValueError("Number of shots must be less than the total number of pixels.")
+        self.nb_shots = num_shots
+
+        self.unit_normalise = unit_normalise
+        self.input_dim = 2
+        self.output_dim = 3
+        self.img_size = (*resolution, self.output_dim)
+        self.order_pixels = order_pixels
+
+        self.data_path = data_path
+        partitions = pd.read_csv(self.data_path+'list_eval_partition.txt', 
+                                 header=None, 
+                                 sep=r'\s+', 
+                                 names=['filename', 'partition'])
+        if data_split in ["train"]:
+            self.files = partitions[partitions['partition'] == 0]['filename'].values
+        elif data_split in ["val"]:
+            self.files = partitions[partitions['partition'] == 1]['filename'].values
+        elif data_split in ["test"]:
+            # self.files = partitions[partitions['partition'] == 2]['filename'].values
+
+            ## To get the translation-equivariance img in front of the test set (incl. Ellen selfie)
+            self.files = partitions[(partitions['partition'] == 2) | (partitions['partition'] == 3)]['filename'].values
+            self.files = np.concatenate((self.files[-1:], self.files[:-1]))
+
+        else:
+            raise ValueError(f"Invalid data split provided. Got {data_split}")
+
+        if data_split in ["train", "val"]:
+            self.adaptation = False
+        elif data_split in ["test"]:
+            self.adaptation = True
+        else:
+            raise ValueError(f"Invalid data split provided. Got {data_split}")
+
+        self.total_envs = len(self.files)
+        if self.total_envs == 0:
+            raise ValueError("No files found for the split.")
+
+        self.total_pixels = self.img_size[0] * self.img_size[1]
+
+        ## Ssee CAVIA code: https://github.com/lmzintgraf/cavia)
+        self.transform = transforms.Compose([lambda x: Image.open(x).convert('RGB'),
+                                            transforms.Resize((self.img_size[0], self.img_size[1]), Image.LANCZOS),
+                                            transforms.ToTensor(),
+                                            # transforms.Normalize(mean=0.5, std=0.5) if not False else transforms.Lambda(lambda x: x),
+                                            ])
+
+        ## Add everything a time series dataset would have
+        self.num_steps = self.total_pixels
+        self.data_size = self.output_dim
+        self.positional_enc = positional_enc
+        self.t_eval = np.linspace(0., 1., self.num_steps)
+        if self.positional_enc is not None:
+            D, PE_cte = self.positional_enc
+            pos_enc = np.zeros((self.num_steps, D))
+            for pos in range(self.num_steps):
+                for i in range(0, D, 2):
+                    pos_enc[pos, i] = np.sin(pos / (PE_cte ** (i / D)))
+                    if i + 1 < D:
+                        pos_enc[pos, i + 1] = np.cos(pos / (PE_cte ** (i / D)))
+            self.t_eval = np.concatenate((self.t_eval[:, None], pos_enc), axis=-1)
+        else:
+            self.t_eval = self.t_eval[:, None]
+
+        self.nb_classes = 40                                        ### If using the attributes
+        ## labels as NaNs
+        self.labels = np.nan * np.ones((self.total_envs,), dtype=int)
+
+    def get_image(self, filename) -> torch.Tensor:
+        img_path = os.path.join(self.data_path+"img_align_celeba/", filename)
+        img = self.transform(img_path).float()
+        img = img.permute(1, 2, 0)
+        return np.array(img)
+
+    def sample_pixels(self, img):
+        total_pixels = self.img_size[0] * self.img_size[1]
+
+        if self.order_pixels:
+            flattened_indices = np.arange(self.nb_shots)
+        else:
+            flattened_indices = np.random.choice(total_pixels, size=self.nb_shots, replace=False)
+
+        x, y = np.unravel_index(flattened_indices, (self.img_size[0], self.img_size[1]))
+        coords = np.vstack((x, y)).T
+        normed_coords = (coords / np.array(self.img_size[:2]))
+
+        pixel_values = img[coords[:, 0], coords[:, 1], :]
+
+        return normed_coords, pixel_values
+
+    def set_seed_sample_pixels(self, seed, idx):
+        np.random.seed(seed)
+        # np.random.set_state(seed)
+        img = self.get_image(self.files[idx])
+        return self.sample_pixels(img)
+
+
+    def __getitem__(self, idx):
+        img = self.get_image(self.files[idx])
+        normed_coords, pixel_values = self.sample_pixels(img)
+        pixels = pixel_values.reshape(-1, self.output_dim)
+
+        if not self.unit_normalise:
+        ## Rescale the RGB pixels to be between -1 and 1
+            pixels = (pixels - 0.5) / 0.5
+
+        ## Retturn pixels in the range (0, 255) as integers
+        pixels = (pixels * 255).astype(np.int32)
+
+        return pixels, self.labels[idx]
+
+    def __len__(self):
+        # return self.total_envs
+        return 128
+
+
+def create_celeba_dataset(bsz=128):
+    print("[*] Generating MNIST Sequence Modeling Dataset...")
+
+    # Constants
+    SEQ_LENGTH, N_CLASSES, IN_DIM = 1024, 256, 3
+
+    ## Print ehe current working directory
+    # print(f"Current Working Directory: {os.getcwd()}", flush=True)
+
+    # data_path = "../../WeightSpaceModels/data/celeba/"
+    data_path = "../WeightSpaceModels/data/celeba/"
+    train = CelebADataset(data_path=data_path, data_split="train", num_shots=1024, resolution=[32, 32])
+    test = CelebADataset(data_path=data_path, data_split="test", num_shots=1024, resolution=[32, 32])
+
+    # Return data loaders, with the provided batch size
+    trainloader = torch.utils.data.DataLoader(
+        train,
+        batch_size=bsz,
+        shuffle=True,
+        num_workers=24,
+    )
+    testloader = torch.utils.data.DataLoader(
+        test,
+        batch_size=bsz,
+        shuffle=False,
+        num_workers=24,
+    )
+
+    return trainloader, testloader, N_CLASSES, SEQ_LENGTH, IN_DIM
+
 
 
 # ### QuickDraw Drawing Generation
@@ -671,4 +841,42 @@ Datasets = {
     "cifar-classification": create_cifar_classification_dataset,
     "imdb-classification": create_imdb_classification_dataset,
     "listops-classification": create_listops_classification_dataset,
+    "celeba": create_celeba_dataset,
 }
+
+#%%
+
+## Test an example dataset creation and visualization of a sample
+if __name__ == "__main__":
+    trainloader, testloader, N_CLASSES, SEQ_LENGTH, IN_DIM = create_celeba_dataset(bsz=4)
+    print(f"N_CLASSES: {N_CLASSES}, SEQ_LENGTH: {SEQ_LENGTH}, IN_DIM: {IN_DIM}")
+
+    import matplotlib.pyplot as plt
+
+    for pixels, labels in trainloader:
+        print(f"Pixels Shape: {pixels.shape}, Labels Shape: {labels.shape}")
+        for i in range(pixels.shape[0]):
+            img = pixels[i].numpy().reshape(32, 32, 3)
+            # img = (img * 0.5) + 0.5  # unnormalize
+            plt.imshow(img)
+            plt.title(f"Label: {labels[i].item()}")
+            plt.show()
+        break
+
+    ## Print range of data
+    print(f"Pixel Value Range: {pixels.min().item()} to {pixels.max().item()}")
+
+    ## Do the same thing for MNIST
+    trainloader, testloader, N_CLASSES, SEQ_LENGTH, IN_DIM = create_mnist_dataset(bsz=4)
+    print(f"N_CLASSES: {N_CLASSES}, SEQ_LENGTH: {SEQ_LENGTH}, IN_DIM: {IN_DIM}")
+    import matplotlib.pyplot as plt
+    for pixels, labels in trainloader:
+        print(f"Pixels Shape: {pixels.shape}, Labels Shape: {labels.shape}")
+        for i in range(pixels.shape[0]):
+            img = pixels[i].numpy().reshape(28, 28)
+            plt.imshow(img, cmap="gray")
+            plt.title(f"Label: {labels[i].item()}")
+            plt.show()
+        break
+
+    print(f"Pixel Value Range: {pixels.min().item()} to {pixels.max().item()}")

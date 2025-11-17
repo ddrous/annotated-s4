@@ -13,7 +13,7 @@ from omegaconf import DictConfig, OmegaConf
 from tqdm import tqdm
 from .data import Datasets
 from .dss import DSSLayer
-from .s4 import BatchStackedModel, S4Layer, SSMLayer, sample_image_prefix
+from .s4 import BatchStackedModel, S4Layer, SSMLayer, sample_image_prefix, sample_image_prefix_celeba
 from .s4d import S4DLayer
 
 
@@ -317,6 +317,8 @@ def example_train(
     # Check if classification dataset
     classification = "classification" in dataset
 
+    # print("[*] Preparing dataset is...", dataset, Datasets, flush=True)
+
     # Create dataset
     create_dataset_fn = Datasets[dataset]
     trainloader, testloader, n_classes, l_max, d_input = create_dataset_fn(
@@ -389,9 +391,11 @@ def example_train(
             )
 
         if train.sample is not None and epoch==train.epochs-1:
-            if dataset == "mnist":  # Should work for QuickDraw too but untested
+            if dataset in ["mnist", "celeba"]:  # Should work for QuickDraw too but untested
+                imshape = (28, 28) if dataset == "mnist" else (32, 32, 3)
+                sample_fn_to_partial = sample_image_prefix if dataset == "mnist" else sample_image_prefix_celeba
                 sample_fn = partial(
-                    sample_image_prefix, imshape=(28, 28),
+                    sample_fn_to_partial, imshape=imshape,
                 )  # params=state["params"], length=784, bsz=64, prefix=train.sample)
                 #   params=state["params"], length=784, bsz=64, prefix=train.sample)
             else:
@@ -429,9 +433,9 @@ def example_train(
                 save=False,
             )
 
-            # ## Print the shape of the samples and the images
-            # print(f"[*] Sampled {len(samples)} samples of shape {samples[0].shape}")
-            # print(f"[*] Sampled {len(examples)} examples of shape {examples[0].shape}")
+            ## Print the shape of the samples and the images
+            print(f"[*] Sampled {len(samples)} samples of shape {samples[0].shape}")
+            print(f"[*] Sampled {len(examples)} examples of shape {examples[0].shape}")
 
             ## Stack the samples and examples
             new_samples = np.stack(samples)
@@ -442,7 +446,7 @@ def example_train(
             mae = np.mean(np.abs(new_samples - new_examples))
             print(f"[*] MSE: {mse}")
             print(f"[*] MAE: {mae}")
-            
+
             ## Save the samples and examples to numpy files
             np.save(f"my_artefacts/mnist_samples.npy", new_samples)
             np.save(f"my_artefacts/mnist_examples.npy", new_examples)
