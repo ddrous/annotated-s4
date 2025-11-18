@@ -283,8 +283,8 @@ class CelebADataset(torch.utils.data.Dataset):
         return pixels, self.labels[idx]
 
     def __len__(self):
-        return self.total_envs
-        # return 33
+        # return self.total_envs
+        return 1024
 
 
 def create_celeba_dataset(bsz=128):

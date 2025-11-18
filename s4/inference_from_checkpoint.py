@@ -20,13 +20,13 @@ from data import Datasets
 # --- 1. SET YOUR PARAMETERS HERE ---
 
 # Point this to the checkpoint directory (can be with or without .orbax-checkpoint-tmp-* suffix)
-CHECKPOINT_PATH = "/home/gb21553/Projects/Annotated-S4/checkpoints/celeba/s4-d_model=340-lr=0.001-bsz=32/checkpoint_0.orbax-checkpoint-tmp-0"
+CHECKPOINT_PATH = "/home/gb21553/Projects/Annotated-S4/checkpoints/celeba/s4-d_model=340-lr=0.001-bsz=32/checkpoint_9.orbax-checkpoint-tmp-0"
 
 # Set any new prefix size you want!
-NEW_PREFIX_SIZE = 500
+NEW_PREFIX_SIZE = 1800
 
 # Set the batch size for how many images to generate
-BATCH_SIZE = 8
+BATCH_SIZE = 256
 
 # --- 2. LOAD CHECKPOINT FUNCTION ---
 def load_orbax_checkpoint(checkpoint_path):
@@ -220,17 +220,17 @@ def main(cfg: DictConfig) -> None:
         avg_bpd = avg_nll_loss / np.log(2)
         return avg_nll_loss, avg_bpd
     
-    suffix_nll, suffix_bpd = validate_suffix_bpd_local(
-        params=params,
-        model_cls=model_cls,
-        rng=rng,
-        testloader=testloader,
-        prefix=NEW_PREFIX_SIZE,
-    )
+    # suffix_nll, suffix_bpd = validate_suffix_bpd_local(
+    #     params=params,
+    #     model_cls=model_cls,
+    #     rng=rng,
+    #     testloader=testloader,
+    #     prefix=NEW_PREFIX_SIZE,
+    # )
     
-    print(f"    Suffix NLL (nats): {suffix_nll:.6f}")
-    print(f"    Suffix BPD (bits): {suffix_bpd:.6f}")
-    print(f"{'='*50}\n")
+    # print(f"    Suffix NLL (nats): {suffix_nll:.6f}")
+    # print(f"    Suffix BPD (bits): {suffix_bpd:.6f}")
+    # print(f"{'='*50}\n")
 
     print(f"[*] Done! Generated {len(samples)} images.")
     print(f"[*] Check your directory for 'im_celeba_0_...png' files.")

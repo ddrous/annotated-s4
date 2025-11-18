@@ -148,3 +148,6 @@ docker-setup.sh
 *.ipynb
 *.streambook.py
 *.notebook.py
+
+# Checkpoints
+checkpoints/

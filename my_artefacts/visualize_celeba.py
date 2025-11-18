@@ -49,7 +49,7 @@ print("celeba_true shape:", celeba_true.shape)
 
 # good in dices = [12, 49, 43, 35]
 # Corrected function to plot MNIST samples
-def plot_celeba_samples(celeba_pred, celeba_true, nb_images_to_plot=50):
+def plot_celeba_samples(celeba_pred, celeba_true, nb_images_to_plot=32):
     # Create a figure with 16 rows and 2 columns
     fig, axs = plt.subplots(nb_images_to_plot, 2, figsize=(4, 2*nb_images_to_plot))
     fig.suptitle("CelebA Samples and True Images", fontsize=16)
@@ -89,3 +89,5 @@ print("First predicted image data:", celeba_pred[0, :, :].shape)
 #%%
 
 
+## Let's print the max pixel value in the remainder of the celeba_pred
+print("Max pixel value in celeba_pred:", celeba_pred[-1, 900:950])

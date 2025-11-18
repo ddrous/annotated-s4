@@ -1946,7 +1946,7 @@ def sample_image_prefix_celeba(
                 )
                 ax2.axis("off")
 
-                fig.savefig("im_celeba_%d.%d.png" % (j, k))
+                fig.savefig("outputs/L=600/im_celeba_%d.%d.png" % (j, k))
                 plt.close(fig)  # Close the figure
                 print(f"Sampled batch {j} image {k}")
 
