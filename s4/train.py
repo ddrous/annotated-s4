@@ -13,9 +13,24 @@ from omegaconf import DictConfig, OmegaConf
 from tqdm import tqdm
 from .data import Datasets
 from .dss import DSSLayer
-from .s4 import BatchStackedModel, S4Layer, SSMLayer, sample_image_prefix, sample_image_prefix_celeba
+from .s4 import (
+    BatchStackedModel,
+    S4Layer,
+    SSMLayer,
+    sample_image_prefix,
+    sample_image_prefix_celeba,
+    init_recurrence,  # Import init_recurrence
+)
 from .s4d import S4DLayer
 
+
+# ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+# ++++++++++++++++++  FIX FOR CHECKPOINTING ERROR ++++++++++++++++++++++
+# ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+# This forces Flax to use the old, stable checkpointing backend
+# and avoid the `orbax` bug you are seeing.
+os.environ["FLAX_LEGACY_CHECKPOINTING"] = "true"  ##### <--- LOOK HERE: FIXES ATTRIBUTE ERROR
+# ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 try:
     # Slightly nonstandard import name to make config easier - see example_train()
@@ -73,9 +88,11 @@ def create_train_state(
 ):
     model = model_cls(training=True)
     init_rng, dropout_rng = jax.random.split(rng, num=2)
+    # Get a sample batch to initialize
+    sample_batch = np.array(next(iter(trainloader))[0].numpy())
     params = model.init(
         {"params": init_rng, "dropout": dropout_rng},
-        np.array(next(iter(trainloader))[0].numpy()),
+        sample_batch,
     )
     # Note: Added immediate `unfreeze()` to play well w/ Optax. See below!
     # params = params["params"].unfreeze()
@@ -129,7 +146,7 @@ def create_train_state(
     # tx = optax.adamw(learning_rate=lr, weight_decay=0.01)
 
     # Check that all special parameter names are actually parameters
-    extra_keys = set(lr_layer.keys()) - set(jax.tree_leaves(name_map(params)))
+    extra_keys = set(lr_layer.keys()) - set(jax.tree.leaves(name_map(params)))
     assert (
         len(extra_keys) == 0
     ), f"Special params {extra_keys} do not correspond to actual params"
@@ -141,7 +158,7 @@ def create_train_state(
         if lr_layer.get(k, lr) > 0.0
         else 0
     )(params)
-    print(f"[*] Trainable Parameters: {sum(jax.tree_leaves(param_sizes))}")
+    print(f"[*] Trainable Parameters: {sum(jax.tree.leaves(param_sizes))}")
     print(f"[*] Total training steps: {total_steps}")
 
     return train_state.TrainState.create(
@@ -238,7 +255,9 @@ def train_step(
         return loss, (logits, acc)
 
     if not classification:
-        batch_labels = batch_inputs[:, :, 0]
+        # Get labels from inputs
+        # (B, L, 1) -> (B, L)
+        batch_labels = batch_inputs[..., 0]
 
     grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
     (loss, (logits, acc)), grads = grad_fn(state.params)
@@ -249,7 +268,9 @@ def train_step(
 @partial(jax.jit, static_argnums=(3, 4))
 def eval_step(batch_inputs, batch_labels, params, model, classification=False):
     if not classification:
-        batch_labels = batch_inputs[:, :, 0]
+        # Get labels from inputs
+        # (B, L, 1) -> (B, L)
+        batch_labels = batch_inputs[..., 0]
     logits = model.apply({"params": params}, batch_inputs)
     loss = np.mean(cross_entropy_loss(logits, batch_labels))
     acc = np.mean(compute_accuracy(logits, batch_labels))
@@ -282,6 +303,74 @@ class LSTMRecurrentModel(nn.Module):
 
     def __call__(self, xs):
         return self.LSTM(self.init_h, xs)[1]
+
+
+# ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+# ++++++++++++++++++ NEW FUNCTION FOR SUFFIX BPD +++++++++++++++++++++++
+# ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+def validate_suffix_bpd(params, model_cls, rng, testloader, prefix):
+    """
+    Calculates NLL and BPD on the test set, but only for the
+    suffix (non-context) part after priming the model with the prefix.
+    """
+    model = model_cls(decode=True, training=False)
+    batch_losses = []
+
+    # Initialize the model state (cache, prime)
+    # This part is a bit tricky: we need the *structure* of the cache
+    # to pass into model.apply. We can get this by running init.
+    print("[*] Initializing model for suffix BPD calculation...")
+    try:
+        init_batch = np.array(next(iter(testloader))[0].numpy())
+    except StopIteration:
+        print("Error: Testloader is empty, cannot calculate suffix BPD.")
+        return 0.0, 0.0
+
+    # We need a separate RNG for this init
+    init_rng, _ = jax.random.split(rng, 2)
+    variables = model.init(init_rng, init_batch)
+    prime = variables["prime"]
+    
+    print("[*] Calculating Suffix BPD over test set...")
+    for batch_idx, (inputs, labels) in enumerate(tqdm(testloader)):
+        inputs = np.array(inputs.numpy())  # (B, L, 1)
+        # labels = np.array(labels.numpy()) # This is the 1D nan array
+        
+        # 1. Initialize a fresh cache for this batch
+        # We use the structure from the init call, but fill it with zeros
+        # This is a simplified way to reset the RNN state for each batch
+        batch_cache = jax.tree.map(np.zeros_like, variables["cache"])
+
+        # 2. Prime the model with the prefix
+        # This runs the model over the first `prefix` steps and updates the cache
+        _, vars = model.apply(
+            {"params": params, "prime": prime, "cache": batch_cache},
+            inputs[:, np.arange(0, prefix)],
+            mutable=["cache"],
+        )
+        primed_cache = vars["cache"]
+
+        # 3. Get logits for the suffix
+        # We feed the ground-truth suffix into the model, starting from the primed cache
+        suffix_inputs = inputs[:, np.arange(prefix, inputs.shape[1])]
+        suffix_logits, _ = model.apply(
+            {"params": params, "prime": prime, "cache": primed_cache},
+            suffix_inputs,
+            mutable=["cache"],
+        )
+
+        # 4. Get the corresponding labels
+        # (B, Suffix_L, 1) -> (B, Suffix_L)
+        suffix_labels = inputs[:, prefix:, 0]
+
+        # 5. Calculate cross-entropy loss for the suffix
+        loss = np.mean(cross_entropy_loss(suffix_logits, suffix_labels))
+        batch_losses.append(loss)
+
+    # Return average NLL (nats) and BPD (bits)
+    avg_nll_loss = np.mean(np.array(batch_losses))
+    avg_bpd = avg_nll_loss / np.log(2)
+    return avg_nll_loss, avg_bpd
 
 
 # ## Sanity Checks
@@ -379,47 +468,104 @@ def example_train(
             f" Accuracy: {test_acc:.4f}"
         )
 
+        # Print BPD
+        if not classification:
+            test_bpd = test_loss / np.log(2)
+            print(f"\tTest BPD (Full Sequence): {test_bpd:.4f}")
+
         # Save a checkpoint each epoch & handle best (test loss... not "copacetic" but ehh)
         if train.checkpoint:
             suf = f"-{train.suffix}" if train.suffix is not None else ""
             run_id = f"checkpoints/{dataset}/{layer}-d_model={model.d_model}-lr={train.lr}-bsz={train.bsz}{suf}"
+
+            # Convert to absolute path
+            run_id = os.path.abspath(run_id)
+            
+            # Create directory if it doesn't exist
+            os.makedirs(run_id, exist_ok=True)
+
             ckpt_path = checkpoints.save_checkpoint(
                 run_id,
                 state,
                 epoch,
                 keep=train.epochs,
+                overwrite=True,
             )
 
-        if train.sample is not None and epoch==train.epochs-1:
-            if dataset in ["mnist", "celeba"]:  # Should work for QuickDraw too but untested
-                imshape = (28, 28) if dataset == "mnist" else (32, 32, 3)
-                sample_fn_to_partial = sample_image_prefix if dataset == "mnist" else sample_image_prefix_celeba
+            # Find the actual checkpoint directory (handles both regular and .orbax-checkpoint-tmp-* names)
+            import glob
+            possible_paths = [
+                ckpt_path,  # Try the returned path first
+                ckpt_path + ".orbax-checkpoint-tmp-*",  # Try with tmp suffix
+            ]
+            
+            actual_ckpt_path = None
+            for pattern in possible_paths:
+                matches = glob.glob(pattern)
+                if matches:
+                    actual_ckpt_path = matches[0]
+                    break
+            
+            if actual_ckpt_path:
+                ckpt_path = actual_ckpt_path
+
+        if train.sample is not None and epoch == train.epochs - 1:
+            if dataset in ["mnist", "celeba"]:  # Added celeba
+                imshape = (
+                    (28, 28) if dataset == "mnist" else (32, 32, 3)
+                )
+                sample_fn_to_partial = (
+                    sample_image_prefix
+                    if dataset == "mnist"
+                    else sample_image_prefix_celeba
+                )
                 sample_fn = partial(
                     sample_fn_to_partial, imshape=imshape,
-                )  # params=state["params"], length=784, bsz=64, prefix=train.sample)
-                #   params=state["params"], length=784, bsz=64, prefix=train.sample)
+                )
             else:
                 raise NotImplementedError(
-                    "Sampling currently only supported for MNIST"
+                    "Sampling currently only supported for MNIST/Celeba"
                 )
 
-            # model_cls = partial(
-            #     BatchStackedModel,
-            #     layer_cls=layer_cls,
-            #     d_output=n_classes,
-            #     classification=classification,
-            #     **model,
-            # )
-            # new_testloader= torch.utils.data.DataLoader(
-            #     new_testloader.dataset,
-            #     batch_size=len(new_testloader.dataset),
-            #     shuffle=False,
-            #     num_workers=24,
-            # )
             new_testloader = testloader
-            new_batch_size = train.bsz
-            print(f"[*] Sampling with {train.sample} context pixels...")
-            print(f"[*] Testloader with total number of batches: {np.ceil(len(new_testloader.dataset) / new_batch_size).astype(int)}, each of size {new_batch_size}")
+            
+            # ++++++++++++++++++++++++++++++++++++++++++++++++++++++
+            # ++++++ ADD SUFFIX BPD CALCULATION ++++++++++++++++++++
+            # ++++++++++++++++++++++++++++++++++++++++++++++++++++++
+            if not classification:
+                print(
+                    f"[*] Calculating Suffix BPD with {train.sample} context channels..."
+                )
+                suffix_nll, suffix_bpd = validate_suffix_bpd(
+                    params=state.params,
+                    model_cls=partial(
+                        model_cls, decode=True
+                    ),  # Must be in decode mode!
+                    rng=rng,
+                    testloader=new_testloader,
+                    prefix=train.sample,
+                )
+                print(f"[*] Suffix NLL (nats): {suffix_nll:.4f}")
+                print(f"[*] Suffix BPD (bits): {suffix_bpd:.4f}")
+                
+                if wandb is not None:
+                    wandb.log(
+                        {
+                            "test/suffix_nll": suffix_nll,
+                            "test/suffix_bpd": suffix_bpd,
+                        },
+                        commit=False,
+                    )
+
+            # ++++++++++++++++++++++++++++++++++++++++++++++++++++++
+            # ++++++ SAMPLING AND MSE CALCULATION ++++++++++++++++++
+            # ++++++++++++++++++++++++++++++++++++++++++++++++++++++
+            print(
+                f"[*] Sampling with {train.sample} context channels..."
+            )
+            print(
+                f"[*] Testloader with total number of batches: {len(new_testloader)}, each of size {train.bsz}"
+            )
             samples, examples = sample_fn(
                 # run_id,
                 params=state.params,
@@ -428,8 +574,7 @@ def example_train(
                 # dataloader=testloader,
                 dataloader=new_testloader,
                 prefix=train.sample,
-                n_batches=78,
-                # n_batches=testloader.num_batches,
+                n_batches=len(new_testloader), # Use full test set
                 save=False,
             )
 
@@ -440,31 +585,87 @@ def example_train(
             ## Stack the samples and examples
             new_samples = np.stack(samples)
             new_examples = np.stack(examples)
-            print(f"[*] Samples and Examples Shapes: {new_samples.shape} and {new_examples.shape}")
-            # calculate the MSE
-            mse = np.mean((new_samples - new_examples) ** 2)
-            mae = np.mean(np.abs(new_samples - new_examples))
-            print(f"[*] MSE: {mse}")
-            print(f"[*] MAE: {mae}")
+            print(
+                f"[*] Samples and Examples Shapes: {new_samples.shape} and {new_examples.shape}"
+            )
+
+            # --- MODIFICATION FOR SUFFIX MSE ---
+            # 1. Flatten the images (B, H, W, C) -> (B, L*C)
+            samples_flat = new_samples.reshape(new_samples.shape[0], -1)
+            examples_flat = new_examples.reshape(new_samples.shape[0], -1)
+
+            # 2. Get the prefix length (in channels)
+            prefix_len = train.sample  # e.g., 900
+
+            # 3. Select only the suffix (completed) part
+            samples_suffix = samples_flat[:, prefix_len:]
+            examples_suffix = examples_flat[:, prefix_len:]
+
+            # 4. Calculate MSE on the suffix only
+            mse_suffix = np.mean(((samples_suffix - examples_suffix) / 255) ** 2)
+
+            print(f"[*] Suffix MSE: {mse_suffix:.4f}")
+            # --- END MSE CALCULATION ---
 
             ## Save the samples and examples to numpy files
-            np.save(f"my_artefacts/mnist_samples.npy", new_samples)
-            np.save(f"my_artefacts/mnist_examples.npy", new_examples)
+            np.save(f"my_artefacts/celeba_samples.npy", new_samples)
+            np.save(f"my_artefacts/celeba_examples.npy", new_examples)
 
             if wandb is not None:
-                samples = [wandb.Image(sample) for sample in samples]
-                wandb.log({"samples": samples}, commit=False)
-                examples = [wandb.Image(example) for example in examples]
-                wandb.log({"examples": examples}, commit=False)
+                # Log a few sample images
+                log_samples = [wandb.Image(sample) for sample in samples[:10]]
+                wandb.log({"samples": log_samples}, commit=False)
+                log_examples = [
+                    wandb.Image(example) for example in examples[:10]
+                ]
+                wandb.log({"examples": log_examples}, commit=False)
+                
+                # Log MSE
+                wandb.log({"test/suffix_mse": mse_suffix}, commit=False)
+
 
         if (classification and test_acc > best_acc) or (
             not classification and test_loss < best_loss
         ):
             # Create new "best-{step}.ckpt and remove old one
+            # if train.checkpoint:
+            #     shutil.copy(ckpt_path, f"{run_id}/best_{epoch}")
+            #     if os.path.exists(f"{run_id}/best_{best_epoch}"):
+            #         os.remove(f"{run_id}/best_{best_epoch}")
+
+            # if train.checkpoint:
+            #     best_path = os.path.join(run_id, f"best_{epoch}")
+            #     shutil.copy(ckpt_path, best_path)
+            #     old_best_path = os.path.join(run_id, f"best_{best_epoch}")
+            #     if os.path.exists(old_best_path):
+            #         os.remove(old_best_path)
+
+            # if train.checkpoint:
+            #     # ckpt_path points to a directory, not a file, so we need to copy the entire directory
+            #     best_path = os.path.join(run_id, f"best_{epoch}")
+            #     if os.path.exists(best_path):
+            #         shutil.rmtree(best_path)
+            #     shutil.copytree(ckpt_path, best_path)
+                
+            #     old_best_path = os.path.join(run_id, f"best_{best_epoch}")
+            #     if os.path.exists(old_best_path):
+            #         shutil.rmtree(old_best_path)
+
+
+        # Also update the best checkpoint section (around line 529):
             if train.checkpoint:
-                shutil.copy(ckpt_path, f"{run_id}/best_{epoch}")
-                if os.path.exists(f"{run_id}/best_{best_epoch}"):
-                    os.remove(f"{run_id}/best_{best_epoch}")
+                best_path = os.path.join(run_id, f"best_{epoch}")
+                if os.path.exists(best_path):
+                    shutil.rmtree(best_path)
+                
+                if os.path.exists(ckpt_path):
+                    shutil.copytree(ckpt_path, best_path)
+                else:
+                    print(f"[WARNING] Checkpoint path does not exist: {ckpt_path}")
+                
+                old_best_path = os.path.join(run_id, f"best_{best_epoch}")
+                if os.path.exists(old_best_path):
+                    shutil.rmtree(old_best_path)
 
             best_loss, best_acc, best_epoch = test_loss, test_acc, epoch
 
@@ -473,22 +674,33 @@ def example_train(
             f"\tBest Test Loss: {best_loss:.5f} -- Best Test Accuracy:"
             f" {best_acc:.4f} at Epoch {best_epoch + 1}\n"
         )
+        if not classification:
+            print(
+                f"\tBest Test BPD (Full): {best_loss / np.log(2):.4f} at Epoch {best_epoch + 1}\n"
+            )
 
         if wandb is not None:
+            log_dict = {
+                "train/loss": train_loss,
+                "train/accuracy": train_acc,
+                "test/loss": test_loss,
+                "test/accuracy": test_acc,
+            }
+            if not classification:
+                log_dict["test/bpd_full"] = test_loss / np.log(2)
+
             wandb.log(
-                {
-                    "train/loss": train_loss,
-                    "train/accuracy": train_acc,
-                    "test/loss": test_loss,
-                    "test/accuracy": test_acc,
-                },
+                log_dict,
                 step=epoch,
             )
             wandb.run.summary["Best Test Loss"] = best_loss
             wandb.run.summary["Best Test Accuracy"] = best_acc
             wandb.run.summary["Best Epoch"] = best_epoch
+            if not classification:
+                wandb.run.summary["Best Test BPD (Full)"] = best_loss / np.log(2)
 
         print(f"[*] Epoch {epoch + 1} took {time.time() - start_time:.2f}s\n")
+
 
 @hydra.main(version_base=None, config_path="", config_name="config")
 def main(cfg: DictConfig) -> None:

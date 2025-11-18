@@ -276,18 +276,23 @@ class CelebADataset(torch.utils.data.Dataset):
         ## Retturn pixels in the range (0, 255) as integers
         pixels = (pixels * 255).astype(np.int32)
 
+        pixels_flat = pixels.reshape(-1) 
+        # 2. Add channel dim to make (3072, 1)
+        pixels = pixels_flat[:, np.newaxis]
+
         return pixels, self.labels[idx]
 
     def __len__(self):
-        # return self.total_envs
-        return 128
+        return self.total_envs
+        # return 33
 
 
 def create_celeba_dataset(bsz=128):
     print("[*] Generating MNIST Sequence Modeling Dataset...")
 
     # Constants
-    SEQ_LENGTH, N_CLASSES, IN_DIM = 1024, 256, 3
+    # SEQ_LENGTH, N_CLASSES, IN_DIM = 1024, 256, 3
+    SEQ_LENGTH, N_CLASSES, IN_DIM = 3072, 256, 1
 
     ## Print ehe current working directory
     # print(f"Current Working Directory: {os.getcwd()}", flush=True)
@@ -303,12 +308,14 @@ def create_celeba_dataset(bsz=128):
         batch_size=bsz,
         shuffle=True,
         num_workers=24,
+        drop_last=True,
     )
     testloader = torch.utils.data.DataLoader(
         test,
         batch_size=bsz,
         shuffle=False,
         num_workers=24,
+        drop_last=True,
     )
 
     return trainloader, testloader, N_CLASSES, SEQ_LENGTH, IN_DIM

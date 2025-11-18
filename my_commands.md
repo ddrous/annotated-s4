@@ -1,6 +1,9 @@
 ## MNIST
 
 ```python
+
+nohup env FLAX_LEGACY_CHECKPOINTING=true python -m s4.train dataset=celeba layer=s4 train.epochs=1 train.bsz=32 model.d_model=340 model.layer.N=64 train.sample=900 wandb.mode=online train.checkpoint=true > celeba.log &
+
 nohup python -m s4.train dataset=mnist layer=s4 train.epochs=100 train.bsz=128 model.d_model=340 model.layer.N=64 train.sample=300 > mnist.log &
 ```
 ```

@@ -1662,6 +1662,149 @@ def sample_image_prefix(
 #     return final, final2
 
 
+# def sample_image_prefix_celeba(
+#     params,
+#     model,
+#     # length,
+#     rng,
+#     dataloader,
+#     prefix=300,
+#     # bsz=32,
+#     imshape=(32, 32, 3),
+#     n_batches=None,
+#     save=True,
+# ):
+#     """
+#     Sample a color image represented as intensities in [0, 255].
+    
+#     NOTE: This function is specific to the model in train.py which is
+#     trained on (B, 1024, 3) inputs to predict *only* the Red channel (B, 1024, 256).
+#     Therefore, this sampling function will only generate the RED channel.
+#     The Green and Blue channels will be copied from the ground truth.
+#     """
+#     import matplotlib.pyplot as plt
+#     import numpy as onp
+
+#     # Get batch size and shape from the first batch
+#     try:
+#         first_batch = next(iter(dataloader))[0].numpy() # (B, 1024, 3)
+#     except StopIteration:
+#         print("Dataloader is empty.")
+#         return None, None
+        
+#     BATCH = first_batch.shape[0]
+    
+#     # The model's sequence length is the number of pixels, e.g., 1024
+#     LENGTH = first_batch.shape[1] 
+    
+#     # Verify shape
+#     try:
+#         H, W, C = imshape
+#         expected_loader_shape = (BATCH, H * W, C) # e.g. (B, 1024, 3)
+#         assert first_batch.shape == expected_loader_shape
+#     except AssertionError:
+#         print(f"Error: Dataloader shape {first_batch.shape} does not match expected loader shape (BATCH, H*W, C) which is {expected_loader_shape}")
+#         return None, None
+#     except ValueError:
+#         print(f"Error: imshape {imshape} is not a 3-tuple (H, W, C). Dataloader shape is {first_batch.shape}")
+#         return None, None
+
+#     # Initialize model recurrence state
+#     # Model expects (B, 1024, 3)
+#     start_init = onp.zeros_like(first_batch) 
+#     params, prime, cache = init_recurrence(model, params, start_init, rng)
+
+#     START = prefix # e.g., 300 (pixels)
+#     print(f"Start Prefix and Total Length (pixels): {START}, {LENGTH}", flush=True)
+#     print(f"Image shape for visualization: {imshape}", flush=True)
+
+#     # Create a new iterator to process all batches
+#     it = iter(dataloader)
+    
+#     # Store all outputs for final MSE calculation in train.py
+#     all_samples = []
+#     all_examples = []
+
+#     for j, im in enumerate(it):
+#         if n_batches is not None and j >= n_batches:
+#             break
+
+#         image_orig = im[0].numpy() # (BATCH, 1024, 3)
+        
+#         # Handle partial batches (e.g., last batch)
+#         current_batch_size = image_orig.shape[0]
+#         if current_batch_size != BATCH:
+#             print(f"Skipping batch {j} with size {current_batch_size} (expected {BATCH})")
+#             continue
+            
+#         # `cur` is the input to the model, which will be modified in-place by `sample`
+#         cur = onp.array(image_orig) # (BATCH, 1024, 3)
+
+#         # Cache the first `START` inputs.
+#         # model.apply expects (BATCH, SEQUENCE, CHANNELS)
+#         # Pass (BATCH, START, 3)
+#         out_vars, vars = model.apply(
+#             {"params": params, "prime": prime, "cache": cache},
+#             cur[:, onp.arange(0, START)],
+#             mutable=["cache"],
+#         )
+#         cache = vars["cache"]
+
+#         # Sample the rest of the sequence
+#         # `sample` will modify `cur` (from START to LENGTH-1)
+#         # and only change the Red channel (cur[:, :, 0])
+#         out = sample(model, params, prime, cache, cur, START, LENGTH - 1, rng)
+#         # `out` has shape (BATCH, 1024, 3)
+
+#         print("Finding out shape !")
+#         print("Out shape (pixels, channels)", out.shape)
+#         print("Image shape (pixels, channels)", image_orig.shape)
+        
+#         # Save flattened versions
+#         np.save(f"my_artefacts/celeba_samples.npy", out)
+#         np.save(f"my_artefacts/celeba_examples.npy", image_orig)
+
+#         # --- Visualization ---
+        
+#         # 'final' = ground truth prefix + sampled suffix (Red channel only)
+#         # Reshape (B, 1024, 3) -> (B, 32, 32, 3)
+#         final = out.reshape(BATCH, *imshape)
+        
+#         # 'final2' = full ground truth
+#         final2 = image_orig.reshape(BATCH, *imshape)
+
+#         # Add to lists to be returned
+#         all_samples.append(final)
+#         all_examples.append(final2)
+
+#         if save:
+#             # Ensure images are in 0-255 range for safe conversion
+#             final_img = onp.clip(final, 0, 255)
+#             final2_img = onp.clip(final2, 0, 255)
+
+#             for k in range(BATCH):
+#                 fig, (ax1, ax2) = plt.subplots(ncols=2)
+#                 ax1.set_title("Sampled (Prefix + Gen Red)")
+#                 # Normalize 0-255 to 0-1 float for imshow
+#                 ax1.imshow(final_img[k].astype(onp.uint8)) # Use astype for int display
+#                 ax1.axis("off")
+
+#                 ax2.set_title("True (Ground Truth)")
+#                 ax2.imshow(final2_img[k].astype(onp.uint8))
+#                 ax2.axis("off")
+                
+#                 fig.savefig("im_celeba_%d.%d.png" % (j, k))
+#                 plt.close(fig) # Close the figure
+#                 print(f"Sampled batch {j} image {k}")
+    
+#     # Concatenate all batches
+#     final_samples = onp.concatenate(all_samples, axis=0)
+#     final_examples = onp.concatenate(all_examples, axis=0)
+                
+#     return final_samples, final_examples
+
+
+
 def sample_image_prefix_celeba(
     params,
     model,
@@ -1677,50 +1820,56 @@ def sample_image_prefix_celeba(
     """
     Sample a color image represented as intensities in [0, 255].
     
-    NOTE: This function is specific to the model in train.py which is
-    trained on (B, 1024, 3) inputs to predict *only* the Red channel (B, 1024, 256).
-    Therefore, this sampling function will only generate the RED channel.
-    The Green and Blue channels will be copied from the ground truth.
+    NOTE: This function assumes the model is trained autoregressively
+    on flattened channels (R1, G1, B1, R2, G2, B2, ...), with an
+    input shape like (B, 3072, 1).
     """
     import matplotlib.pyplot as plt
     import numpy as onp
 
     # Get batch size and shape from the first batch
     try:
-        first_batch = next(iter(dataloader))[0].numpy() # (B, 1024, 3)
+        first_batch = next(iter(dataloader))[0].numpy()  # (B, 3072, 1)
     except StopIteration:
         print("Dataloader is empty.")
         return None, None
-        
+
     BATCH = first_batch.shape[0]
-    
-    # The model's sequence length is the number of pixels, e.g., 1024
-    LENGTH = first_batch.shape[1] 
-    
+
+    # The model's sequence length is H*W*C, e.g., 3072
+    LENGTH = first_batch.shape[1]  # 3072
+
     # Verify shape
     try:
         H, W, C = imshape
-        expected_loader_shape = (BATCH, H * W, C) # e.g. (B, 1024, 3)
+        # The loader shape is (B, H*W*C, 1)
+        expected_loader_shape = (BATCH, H * W * C, 1)  # e.g. (B, 3072, 1)
         assert first_batch.shape == expected_loader_shape
     except AssertionError:
-        print(f"Error: Dataloader shape {first_batch.shape} does not match expected loader shape (BATCH, H*W, C) which is {expected_loader_shape}")
+        print(
+            f"Error: Dataloader shape {first_batch.shape} does not match expected loader shape (BATCH, H*W*C, 1) which is {expected_loader_shape}"
+        )
         return None, None
     except ValueError:
-        print(f"Error: imshape {imshape} is not a 3-tuple (H, W, C). Dataloader shape is {first_batch.shape}")
+        print(
+            f"Error: imshape {imshape} is not a 3-tuple (H, W, C). Dataloader shape is {first_batch.shape}"
+        )
         return None, None
 
     # Initialize model recurrence state
-    # Model expects (B, 1024, 3)
-    start_init = onp.zeros_like(first_batch) 
+    # Model expects (B, 3072, 1)
+    start_init = onp.zeros_like(first_batch)
     params, prime, cache = init_recurrence(model, params, start_init, rng)
 
-    START = prefix # e.g., 300 (pixels)
-    print(f"Start Prefix and Total Length (pixels): {START}, {LENGTH}", flush=True)
+    START = prefix  # e.g., 900 (channels)
+    print(
+        f"Start Prefix and Total Length (channels): {START}, {LENGTH}", flush=True
+    )
     print(f"Image shape for visualization: {imshape}", flush=True)
 
     # Create a new iterator to process all batches
     it = iter(dataloader)
-    
+
     # Store all outputs for final MSE calculation in train.py
     all_samples = []
     all_examples = []
@@ -1729,20 +1878,22 @@ def sample_image_prefix_celeba(
         if n_batches is not None and j >= n_batches:
             break
 
-        image_orig = im[0].numpy() # (BATCH, 1024, 3)
-        
+        image_orig = im[0].numpy()  # (BATCH, 3072, 1)
+
         # Handle partial batches (e.g., last batch)
         current_batch_size = image_orig.shape[0]
         if current_batch_size != BATCH:
-            print(f"Skipping batch {j} with size {current_batch_size} (expected {BATCH})")
+            print(
+                f"Skipping batch {j} with size {current_batch_size} (expected {BATCH})"
+            )
             continue
-            
+
         # `cur` is the input to the model, which will be modified in-place by `sample`
-        cur = onp.array(image_orig) # (BATCH, 1024, 3)
+        cur = onp.array(image_orig)  # (BATCH, 3072, 1)
 
         # Cache the first `START` inputs.
-        # model.apply expects (BATCH, SEQUENCE, CHANNELS)
-        # Pass (BATCH, START, 3)
+        # model.apply expects (BATCH, SEQUENCE, 1)
+        # Pass (BATCH, START, 1)
         out_vars, vars = model.apply(
             {"params": params, "prime": prime, "cache": cache},
             cur[:, onp.arange(0, START)],
@@ -1752,24 +1903,24 @@ def sample_image_prefix_celeba(
 
         # Sample the rest of the sequence
         # `sample` will modify `cur` (from START to LENGTH-1)
-        # and only change the Red channel (cur[:, :, 0])
+        # and will correctly change the only channel (cur[:, :, 0])
         out = sample(model, params, prime, cache, cur, START, LENGTH - 1, rng)
-        # `out` has shape (BATCH, 1024, 3)
+        # `out` has shape (BATCH, 3072, 1)
 
         print("Finding out shape !")
-        print("Out shape (pixels, channels)", out.shape)
-        print("Image shape (pixels, channels)", image_orig.shape)
-        
+        print("Out shape (seq, channels)", out.shape)
+        print("Image shape (seq, channels)", image_orig.shape)
+
         # Save flattened versions
         np.save(f"my_artefacts/celeba_samples.npy", out)
         np.save(f"my_artefacts/celeba_examples.npy", image_orig)
 
         # --- Visualization ---
-        
-        # 'final' = ground truth prefix + sampled suffix (Red channel only)
-        # Reshape (B, 1024, 3) -> (B, 32, 32, 3)
+
+        # 'final' = ground truth prefix + sampled suffix
+        # Reshape (B, 3072, 1) -> (B, 32, 32, 3)
         final = out.reshape(BATCH, *imshape)
-        
+
         # 'final2' = full ground truth
         final2 = image_orig.reshape(BATCH, *imshape)
 
@@ -1784,25 +1935,26 @@ def sample_image_prefix_celeba(
 
             for k in range(BATCH):
                 fig, (ax1, ax2) = plt.subplots(ncols=2)
-                ax1.set_title("Sampled (Prefix + Gen Red)")
+                ax1.set_title("Sampled (Prefix + Gen)")
                 # Normalize 0-255 to 0-1 float for imshow
-                ax1.imshow(final_img[k].astype(onp.uint8)) # Use astype for int display
+                ax1.imshow(final_img[k].astype(onp.uint8))  # Use astype for int display
                 ax1.axis("off")
-                
+
                 ax2.set_title("True (Ground Truth)")
-                ax2.imshow(final2_img[k].astype(onp.uint8))
+                ax2.imshow(
+                    final2_img[k].astype(onp.uint8)
+                )
                 ax2.axis("off")
-                
+
                 fig.savefig("im_celeba_%d.%d.png" % (j, k))
-                plt.close(fig) # Close the figure
+                plt.close(fig)  # Close the figure
                 print(f"Sampled batch {j} image {k}")
-    
+
     # Concatenate all batches
     final_samples = onp.concatenate(all_samples, axis=0)
     final_examples = onp.concatenate(all_examples, axis=0)
-                
-    return final_samples, final_examples
 
+    return final_samples, final_examples
 
 
 # ### Experiments: QuickDraw

@@ -55,6 +55,7 @@ def plot_celeba_samples(celeba_pred, celeba_true, nb_images_to_plot=50):
     fig.suptitle("CelebA Samples and True Images", fontsize=16)
 
     ## Plot the true, then the predicted image next to each other
+    print("Number of images to plot:", nb_images_to_plot)
     for a, i in enumerate(range(nb_images_to_plot)):
     # for a, i in enumerate(np.random.randint(0, min(celeba_pred.shape[0], celeba_true.shape[0]), size=16)):
     # for a, i in enumerate([12, 49, 43, 35]):
